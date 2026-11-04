@@ -34,6 +34,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/memory/memory.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/status_macros.h"  // from @com_google_absl
@@ -46,6 +47,7 @@
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "litert/cc/litert_model.h"  // from @litert
+#include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "litert/test/matchers.h"  // from @litert
 #include "runtime/components/constrained_decoding/constrained_decoder.h"
 #include "runtime/components/constrained_decoding/constraint.h"
@@ -842,6 +844,23 @@ TEST_P(FakeLmEmbeddingStepTest, DecodeEmbeddingAfterPrefillEmbeddings) {
   ASSERT_OK(PrefillEmbeddings({3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}));
   EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(11));
   ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(5));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, PrefillEmbeddingsRunsTheChunksOfATextPrefill) {
+  std::vector<std::string> signatures;
+  executor_->UpdatePreGraphRunCallback(
+      [&signatures](absl::string_view signature_name, int current_step,
+                    absl::flat_hash_map<absl::string_view, TensorBuffer>&) {
+        signatures.push_back(std::string(signature_name));
+      });
+  // 11 rows: a full chunk of the prefill signature and a padded one, as a text
+  // prefill on CPU runs them, without decode steps.
+  ASSERT_OK(PrefillEmbeddings({3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}));
+  EXPECT_THAT(signatures, ElementsAre("prefill_8", "prefill_8"));
+  signatures.clear();
+  ASSERT_OK(PrefillEmbeddings({8, 9, 7}));
+  EXPECT_THAT(signatures, ElementsAre("prefill_8"));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
 }
 
 TEST_P(FakeLmEmbeddingStepTest, DecodeEmbeddingWithoutOutputs) {

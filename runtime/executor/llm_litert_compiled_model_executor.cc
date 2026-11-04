@@ -2268,55 +2268,70 @@ absl::Status LlmLiteRtCompiledModelExecutorStatic::EnsurePrefillBuffers(
 
 absl::Status LlmLiteRtCompiledModelExecutorStatic::RunPrefillEmbeddingChunk(
     const std::string& prefill_signature, int prefill_length,
-    absl::Span<const float> embeddings, bool pending_token,
+    absl::Span<const float> embeddings, bool pending_token, bool async,
     std::vector<float>* absl_nullable last_hidden_states) {
+  ABSL_ASSIGN_OR_RETURN(const int dimension,
+                        GetInputEmbeddingDimension(
+                            /*with_hidden_states=*/last_hidden_states !=
+                            nullptr));
+  const int num_rows = embeddings.size() / dimension;
+  RET_CHECK_GT(num_rows, 0);
+  RET_CHECK_LE(num_rows, prefill_length);
   const int start_step =
       llm_context_->processed_context()
           .processed_tokens()
           .GetNextUnprocessedToken()
           .step;
-  if (start_step + prefill_length > state_->GetNumEntries()) {
+  if (start_step + num_rows > state_->GetNumEntries()) {
     return absl::OutOfRangeError(absl::StrCat(
         "The context of ", state_->GetNumEntries(), " entries is full."));
   }
   ABSL_RETURN_IF_ERROR(EnsurePrefillBuffers(prefill_signature, prefill_length));
   auto& input_buffers = prefill_input_buffers_[prefill_signature];
   auto& output_buffers = prefill_output_buffers_[prefill_signature];
+  // Like `PrefillInternal()`, pads the rows past `num_rows` with zero
+  // embeddings at position 0, which the attention mask hides.
   ABSL_RETURN_IF_ERROR(CopyEmbeddingsToBuffer(
       embeddings, input_buffers[*signatures_.input_embeddings]));
   {
     TensorBuffer& input_pos = input_buffers[signatures_.input_positions];
     LITERT_ASSIGN_OR_RETURN(size_t input_pos_size, input_pos.PackedSize());
-    RET_CHECK_EQ(input_pos_size, prefill_length * sizeof(int32_t));
     LITERT_ASSIGN_OR_RETURN(
         auto input_pos_lock_and_addr,
         TensorBufferScopedLock::Create<int32_t>(
             input_pos, TensorBuffer::LockMode::kWrite));
-    for (int i = 0; i < prefill_length; ++i) {
+    std::memset(input_pos_lock_and_addr.second, 0, input_pos_size);
+    for (int i = 0; i < num_rows; ++i) {
       input_pos_lock_and_addr.second[i] = start_step + i;
     }
   }
   ABSL_RETURN_IF_ERROR(PrepareAttentionMasks(
-      input_buffers, start_step, /*steps=*/prefill_length,
+      input_buffers, start_step, /*steps=*/num_rows,
       RingBufferAttentionMaskMode::kPrefill));
   if (gpu_optimized_single_buffer_cache_) {
     LITERT_RETURN_IF_ERROR(signatures_.input_int32_param.has_value());
     ABSL_RETURN_IF_ERROR(FillSingleBufferCacheParamTensor(
-        input_buffers[*signatures_.input_int32_param], start_step,
-        prefill_length));
+        input_buffers[*signatures_.input_int32_param], start_step, num_rows));
+  }
+  // TODO: b/494284915 - Switch to use async prefill for Metal backend.
+  if (!do_prefill_sync_.has_value()) {
+    do_prefill_sync_ = std::any_of(
+        input_buffers.begin(), input_buffers.end(),
+        [](const auto& pair) { return pair.second.IsMetalMemory(); });
   }
   ABSL_RETURN_IF_ERROR(BindTensorsAndRunPrefill(
-      prefill_signature, input_buffers, output_buffers, /*async=*/false));
-  ABSL_RETURN_IF_ERROR(RecordProcessedEmbeddingRows(
-      *llm_context_, prefill_length, pending_token));
+      prefill_signature, input_buffers, output_buffers,
+      /*async=*/async && !*do_prefill_sync_));
+  ABSL_RETURN_IF_ERROR(RecordProcessedEmbeddingRows(*llm_context_, num_rows,
+                                                    pending_token));
   if (last_hidden_states != nullptr) {
     auto it = output_buffers.find(*signatures_.output_hidden_states);
     if (it == output_buffers.end()) {
       return absl::FailedPreconditionError(absl::StrCat(
           "Signature ", prefill_signature, " does not output hidden states."));
     }
-    ABSL_RETURN_IF_ERROR(CopyRowFromBuffer(
-        it->second, /*row=*/prefill_length - 1, *last_hidden_states));
+    ABSL_RETURN_IF_ERROR(CopyRowFromBuffer(it->second, /*row=*/num_rows - 1,
+                                           *last_hidden_states));
   }
   return absl::OkStatus();
 }
@@ -2333,34 +2348,40 @@ absl::Status LlmLiteRtCompiledModelExecutorStatic::RunEmbeddingRows(
           .processed_tokens()
           .GetNextUnprocessedToken()
           .step;
-  if (start_step + num_rows > state_->GetNumEntries()) {
+  const int remaining_capacity = state_->GetNumEntries() - start_step;
+  if (num_rows > remaining_capacity) {
     return absl::OutOfRangeError(
         absl::StrCat(num_rows, " rows at step ", start_step,
                      " do not fit in the context of ",
                      state_->GetNumEntries(), " entries."));
   }
+  // The same chunks as a text prefill of `num_rows` tokens.
+  const bool is_cpu = executor_settings_.GetBackend() == Backend::CPU;
+  ABSL_ASSIGN_OR_RETURN(auto work_groups,
+                        GetOptimizedPrefillWorkGroups(
+                            prefill_signature_map_, num_rows,
+                            remaining_capacity,
+                            /*use_greedy_chunking=*/is_cpu));
   int row = 0;
-  // Exact cover: the longest prefill signatures first, without padding.
-  for (const auto& [prefill_length, prefill_signature] :
-       prefill_signature_map_) {
-    while (num_rows - row >= prefill_length) {
-      const bool is_last_chunk = row + prefill_length == num_rows;
-      ABSL_RETURN_IF_ERROR(RunPrefillEmbeddingChunk(
-          prefill_signature, prefill_length,
-          embeddings.subspan(row * dimension, prefill_length * dimension),
-          pending_token && row == 0,
-          is_last_chunk ? last_hidden_states : nullptr));
-      row += prefill_length;
+  for (int i = 0; i < work_groups.size(); ++i) {
+    const auto& [prefill_signature, chunk_rows] = work_groups[i];
+    const bool is_last_chunk = i + 1 == work_groups.size();
+    int prefill_length = 0;
+    for (const auto& [length, signature] : prefill_signature_map_) {
+      if (signature == prefill_signature) {
+        prefill_length = length;
+      }
     }
+    RET_CHECK_GT(prefill_length, 0);
+    ABSL_RETURN_IF_ERROR(RunPrefillEmbeddingChunk(
+        prefill_signature, prefill_length,
+        embeddings.subspan(row * dimension, chunk_rows * dimension),
+        pending_token && row == 0, /*async=*/!is_last_chunk,
+        is_last_chunk ? last_hidden_states : nullptr));
+    row += chunk_rows;
   }
-  // The rows that no prefill signature fits.
-  for (; row < num_rows; ++row) {
-    ABSL_RETURN_IF_ERROR(RunDecodeEmbeddingStep(
-        embeddings.subspan(row * dimension, dimension),
-        pending_token && row == 0,
-        row + 1 == num_rows ? last_hidden_states : nullptr,
-        /*logits=*/nullptr));
-  }
+  RET_CHECK_EQ(row, num_rows).SetCode(absl::StatusCode::kInternal)
+      << "Work groups not covering all the rows.";
   return absl::OkStatus();
 }
 
@@ -2417,7 +2438,7 @@ absl::Status LlmLiteRtCompiledModelExecutorStatic::DecodeEmbedding(
         it != prefill_signature_map_.end()) {
       return RunPrefillEmbeddingChunk(it->second, /*prefill_length=*/1,
                                       embedding, /*pending_token=*/false,
-                                      hidden_states);
+                                      /*async=*/false, hidden_states);
     }
   }
   return RunDecodeEmbeddingStep(embedding, /*pending_token=*/false,

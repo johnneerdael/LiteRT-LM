@@ -619,9 +619,8 @@ class LlmLiteRtCompiledModelExecutorStatic
       absl::Span<const int> draft_token_ids,
       const ExecutorDecodeParams& decode_params) override;
 
-  // Prefills the rows in chunks that exactly fill the prefill signatures, so
-  // that no padding row reaches a linear attention state, and runs the rows
-  // that no prefill signature fits one by one with the decode signature.
+  // Prefills the rows in the chunks of a text prefill of as many tokens: on GPU
+  // few calls, of which the last one may be padded like a text prefill.
   absl::Status PrefillEmbeddings(
       absl::Span<const float> embeddings,
       std::vector<float>* absl_nullable last_hidden_states) override;
@@ -640,17 +639,19 @@ class LlmLiteRtCompiledModelExecutorStatic
   absl::Status EnsurePrefillBuffers(const std::string& prefill_signature,
                                     int prefill_length);
 
-  // Runs `embeddings`, exactly `prefill_length` rows of input embeddings, with
-  // `prefill_signature` at the current step. If `pending_token` is true, the
-  // first row is the pending input token's. If `last_hidden_states` is not
-  // null, it receives the hidden states of the last row.
+  // Runs `embeddings`, at most `prefill_length` rows of input embeddings, with
+  // `prefill_signature` (of length `prefill_length`) at the current step,
+  // padded like a text prefill. If `pending_token` is true, the first row is
+  // the pending input token's. Runs asynchronously if `async` is true and the
+  // backend allows it. If `last_hidden_states` is not null, it receives the
+  // hidden states of the last row.
   absl::Status RunPrefillEmbeddingChunk(
       const std::string& prefill_signature, int prefill_length,
-      absl::Span<const float> embeddings, bool pending_token,
+      absl::Span<const float> embeddings, bool pending_token, bool async,
       std::vector<float>* absl_nullable last_hidden_states);
 
   // Runs `embeddings`, rows of input embeddings, at the current step with the
-  // exact-cover chunking of `PrefillEmbeddings()`.
+  // chunking of `PrefillEmbeddings()`.
   absl::Status RunEmbeddingRows(absl::Span<const float> embeddings,
                                 bool pending_token,
                                 std::vector<float>* absl_nullable
