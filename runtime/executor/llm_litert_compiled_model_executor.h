@@ -99,6 +99,10 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   absl::StatusOr<TensorBuffer> DecodeLogits(
       const ExecutorInputs& inputs, const ExecutorDecodeParams& decode_params);
 
+  // Embedding step APIs:
+  absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) override;
+
   // State/context management APIs:
   absl::StatusOr<std::unique_ptr<LlmContext>> CreateNewContext(
       std::optional<uint32_t> lora_id,
@@ -481,6 +485,26 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   // When output_batch_size_ == 1, It doesn't do anything.
   absl::Status PrepareFirstDecode();
 
+  // Returns the number of floats in a row of input embeddings, if the model
+  // can run the embedding step APIs, and `with_hidden_states` the hidden
+  // states output that they read.
+  absl::StatusOr<int> GetInputEmbeddingDimension(bool with_hidden_states);
+
+  // Prepares the executor for embedding steps: rolls back the processed tokens
+  // to the current step and resets the decode state that sampling keeps.
+  // Returns the pending input token if there is one, which the caller must run
+  // before the embedding rows.
+  absl::StatusOr<std::shared_ptr<TokenData>> PrepareEmbeddingSteps();
+
+  // Runs `embedding`, one row of input embeddings, with the decode signature
+  // at the current step, and copies the requested outputs. If `pending_token`
+  // is true, the row is the pending input token's and the step marks it as
+  // processed; otherwise the row is recorded as `kInputEmbeddingToken`.
+  absl::Status RunDecodeEmbeddingStep(
+      absl::Span<const float> embedding, bool pending_token,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits);
+
   // Gets the token to decode. If there is id provided in the inputs, it will be
   // returned as the token to decode. Otherwise, the next unprocessed token will
   // be returned.
@@ -648,7 +672,6 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   // `LockedLlmExecutor`).
   SpeculativeDecodingController speculative_decoding_controller_;
 
- private:
   // Initializes and fills global (and optional local) attention mask buffers
   // in `input_buffers` for `[start_timestep, start_timestep + steps)`, unless
   // causal host-mask filling can be skipped for the active GPU configuration.
@@ -690,7 +713,44 @@ class LlmLiteRtCompiledModelExecutorStatic
       absl::Span<const int> draft_token_ids,
       const ExecutorDecodeParams& decode_params) override;
 
+  // Prefills the rows in the chunks of a text prefill of as many tokens: on GPU
+  // few calls, of which the last one may be padded like a text prefill.
+  absl::Status PrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) override;
+
+  // Runs the step with the decode signature, or, when no logits are
+  // requested, with a prefill signature of length 1 if the model has one,
+  // which skips computing the logits.
+  absl::Status DecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) override;
+
  private:
+  // Creates the input and output buffers of `prefill_signature`, of length
+  // `prefill_length`, unless they already exist.
+  absl::Status EnsurePrefillBuffers(const std::string& prefill_signature,
+                                    int prefill_length);
+
+  // Runs `embeddings`, at most `prefill_length` rows of input embeddings, with
+  // `prefill_signature` (of length `prefill_length`) at the current step,
+  // padded like a text prefill. If `pending_token` is true, the first row is
+  // the pending input token's. Runs asynchronously if `async` is true and the
+  // backend allows it. If `last_hidden_states` is not null, it receives the
+  // hidden states of the last row.
+  absl::Status RunPrefillEmbeddingChunk(
+      const std::string& prefill_signature, int prefill_length,
+      absl::Span<const float> embeddings, bool pending_token, bool async,
+      std::vector<float>* absl_nullable last_hidden_states);
+
+  // Runs `embeddings`, rows of input embeddings, at the current step with the
+  // chunking of `PrefillEmbeddings()`.
+  absl::Status RunEmbeddingRows(absl::Span<const float> embeddings,
+                                bool pending_token,
+                                std::vector<float>* absl_nullable
+                                    last_hidden_states);
+
   LlmLiteRtCompiledModelExecutorStatic(
       LlmExecutorSettings executor_settings, Environment& env,
       std::unique_ptr<CompiledModel> compiled_model,

@@ -40,6 +40,7 @@
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/clock.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_macros.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
@@ -1158,6 +1159,31 @@ absl::Status SerialExecutionManager::SetCurrentStep(
         "Target step is greater than the current step: ", current_step));
   }
   return llm_executor->SetCurrentStep(target_step);
+}
+
+absl::Status SerialExecutionManager::PrefillEmbeddings(
+    const SessionInfo& session_info, absl::Span<const float> embeddings,
+    std::vector<float>* absl_nullable last_hidden_states) {
+  ABSL_ASSIGN_OR_RETURN(auto llm_executor,
+                        resource_manager_->AcquireExecutorWithContextHandler(
+                            session_info.context_handler));
+  return llm_executor->PrefillEmbeddings(embeddings, last_hidden_states);
+}
+
+absl::Status SerialExecutionManager::DecodeEmbedding(
+    const SessionInfo& session_info, absl::Span<const float> embedding,
+    std::vector<float>* absl_nullable hidden_states,
+    std::vector<float>* absl_nullable logits) {
+  ABSL_ASSIGN_OR_RETURN(auto llm_executor,
+                        resource_manager_->AcquireExecutorWithContextHandler(
+                            session_info.context_handler));
+  return llm_executor->DecodeEmbedding(embedding, hidden_states, logits);
+}
+
+absl::StatusOr<std::vector<float>> SerialExecutionManager::LookupTokenEmbedding(
+    int token_id) {
+  ABSL_ASSIGN_OR_RETURN(auto llm_executor, resource_manager_->AcquireExecutor());
+  return llm_executor->LookupTokenEmbedding(token_id);
 }
 
 absl::StatusOr<std::unique_ptr<ProcessedContext>>

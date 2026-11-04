@@ -72,6 +72,7 @@ using TokenizerType = ::litert::support::TokenizerType;
 
 namespace {
 
+using ::testing::status::IsOkAndHolds;
 using ::testing::status::StatusIs;
 
 constexpr absl::string_view kTestdataDir =
@@ -335,6 +336,39 @@ TEST_F(SessionAdvancedTest, RunPrefill) {
   std::vector<InputData> inputs;
   inputs.emplace_back(InputText("Hello World!"));
   EXPECT_OK(session->RunPrefill(inputs));
+}
+
+TEST_F(SessionAdvancedTest, RunsEmbeddingSteps) {
+  ASSERT_OK_AND_ASSIGN(auto session, CreateTestSession());
+  ASSERT_OK_AND_ASSIGN(std::vector<float> embedding,
+                       session->GetTokenEmbedding(7));
+  EXPECT_THAT(embedding, testing::ElementsAre(7, 7, 7, 7));
+
+  const std::vector<float> rows = {1, 2, 3, 4, 5, 6, 7, 8};
+  std::vector<float> last_hidden_states;
+  ASSERT_OK(session->RunPrefillEmbeddings(rows, &last_hidden_states));
+  EXPECT_THAT(last_hidden_states, testing::ElementsAre(5, 6, 7, 8));
+  EXPECT_THAT(session->GetCurrentStep(), IsOkAndHolds(2));
+
+  std::vector<float> hidden_states;
+  std::vector<float> logits;
+  ASSERT_OK(session->RunDecodeEmbedding(embedding, &hidden_states, &logits));
+  EXPECT_THAT(hidden_states, testing::ElementsAre(7, 7, 7, 7));
+  EXPECT_EQ(logits.size(), tokenizer_->GetVocabSize());
+  ASSERT_OK(session->RunDecodeEmbedding(embedding, nullptr, nullptr));
+  EXPECT_THAT(session->GetCurrentStep(), IsOkAndHolds(4));
+
+  ASSERT_OK(session->RewindToStep(0));
+  EXPECT_THAT(session->GetCurrentStep(), IsOkAndHolds(0));
+}
+
+TEST_F(SessionAdvancedTest, EmbeddingStepsReportExecutorErrors) {
+  ASSERT_OK_AND_ASSIGN(auto session, CreateTestSession());
+  const std::vector<float> rows = {1, 2, 3};
+  EXPECT_THAT(session->RunPrefillEmbeddings(rows, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(session->RunDecodeEmbedding(rows, nullptr, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 TEST_F(SessionAdvancedTest, EmptyInputTextReturnsError) {

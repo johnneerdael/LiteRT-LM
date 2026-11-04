@@ -30,6 +30,7 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constraint.h"
 #include "runtime/components/constrained_decoding/no_repeat_ngram_config.h"
@@ -276,6 +277,30 @@ class ExecutionManager {
   virtual absl::Status RestoreContext(
       const SessionInfo& session_info,
       std::unique_ptr<ProcessedContext> processed_context) = 0;
+
+  // Synchronously prefills rows of input embeddings in the context of the
+  // given session. See `LlmExecutorBase::PrefillEmbeddings()`.
+  virtual absl::Status PrefillEmbeddings(
+      const SessionInfo& session_info, absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) {
+    return absl::UnimplementedError("PrefillEmbeddings not implemented.");
+  }
+
+  // Synchronously runs one step with a row of input embeddings in the context
+  // of the given session. See `LlmExecutorBase::DecodeEmbedding()`.
+  virtual absl::Status DecodeEmbedding(
+      const SessionInfo& session_info, absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) {
+    return absl::UnimplementedError("DecodeEmbedding not implemented.");
+  }
+
+  // Returns the input embedding row of a text token. See
+  // `LlmExecutorBase::LookupTokenEmbedding()`.
+  virtual absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) {
+    return absl::UnimplementedError("LookupTokenEmbedding not implemented.");
+  }
 
   // Returns the audio executor properties.
   virtual absl::StatusOr<AudioExecutorProperties> GetAudioExecutorProperties()

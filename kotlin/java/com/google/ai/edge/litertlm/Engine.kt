@@ -219,6 +219,33 @@ class Engine(val engineConfig: EngineConfig) : AutoCloseable {
     }
   }
 
+  /**
+   * Creates a new [EmbeddingSession] from the initialized engine, which runs the engine's model
+   * step by step with rows of input embeddings. It shares the engine's loaded model and executor
+   * with the engine's other sessions and conversations, and holds its own context (e.g. KV cache).
+   *
+   * @return A new [EmbeddingSession] instance.
+   * @throws IllegalStateException if the engine is not initialized.
+   */
+  fun createEmbeddingSession(): EmbeddingSession {
+    synchronized(lock) {
+      checkInitialized()
+
+      // Using !! is okay. Checked initialization already.
+      return EmbeddingSession(
+        LiteRtLmJni.nativeCreateSession(
+          handle!!,
+          /* samplerConfig= */ null,
+          /* loraPath= */ null,
+          /* audioLoraPath= */ null,
+          /* enableSpeculativeDecoding= */ null,
+          /* speculativeDecodingMode= */ null,
+          /* speculativeLenience= */ null,
+        )
+      )
+    }
+  }
+
   /** Throws [IllegalStateException] if the engine is not initialized. */
   private fun checkInitialized() {
     check(isInitialized()) { "Engine is not initialized." }

@@ -34,6 +34,7 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "nlohmann/json_fwd.hpp"  // from @nlohmann_json
 #include "litert/cc/internal/scoped_file.h"  // from @litert
 #include "c/engine.h"
@@ -106,9 +107,11 @@ using litert::lm::SessionConfig;
 using litert::lm::proto::SamplerParameters;
 
 using litert::lm::jni::GetJniEnvAndAttach;
+using litert::lm::jni::JFloatArrayToVector;
 using litert::lm::jni::JStringToString;
 using litert::lm::jni::NewStringStandardUTF;
 using litert::lm::jni::ScopedLocalRef;
+using litert::lm::jni::ToJavaFloatArray;
 
 void ThrowLiteRtLmJniException(JNIEnv* env, const std::string& message) {
   jclass exClass =
@@ -1193,6 +1196,101 @@ JNI_METHOD(nativeRunDecode)(JNIEnv* env, jclass thiz, jlong session_pointer) {
   }
 
   return NewStringStandardUTF(env, responses->GetTexts()[0]);
+}
+
+LITERTLM_JNIEXPORT jfloatArray JNICALL JNI_METHOD(nativeSessionGetTokenEmbedding)(
+    JNIEnv* env, jclass thiz, jlong session_pointer, jint token_id) {
+  Engine::Session* session =
+      reinterpret_cast<Engine::Session*>(session_pointer);
+  auto embedding = session->GetTokenEmbedding(token_id);
+  if (!embedding.ok()) {
+    ThrowLiteRtLmJniException(env, "Failed to get token embedding: " +
+                                       embedding.status().ToString());
+    return nullptr;
+  }
+  return ToJavaFloatArray(env, *embedding);
+}
+
+LITERTLM_JNIEXPORT jfloatArray JNICALL
+JNI_METHOD(nativeSessionPrefillEmbeddings)(JNIEnv* env, jclass thiz,
+                                           jlong session_pointer,
+                                           jfloatArray embeddings,
+                                           jint num_floats) {
+  Engine::Session* session =
+      reinterpret_cast<Engine::Session*>(session_pointer);
+  std::vector<float> rows = JFloatArrayToVector(env, embeddings);
+  if (num_floats < 0 || num_floats > rows.size()) {
+    ThrowLiteRtLmJniException(env, "Invalid number of embedding floats.");
+    return nullptr;
+  }
+  std::vector<float> last_hidden_states;
+  auto status = session->RunPrefillEmbeddings(
+      absl::MakeConstSpan(rows).first(num_floats), &last_hidden_states);
+  if (!status.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "Failed to prefill embeddings: " + status.ToString());
+    return nullptr;
+  }
+  return ToJavaFloatArray(env, last_hidden_states);
+}
+
+// Returns {hidden_states, logits}, where logits is null unless requested.
+LITERTLM_JNIEXPORT jobjectArray JNICALL
+JNI_METHOD(nativeSessionDecodeEmbedding)(JNIEnv* env, jclass thiz,
+                                         jlong session_pointer,
+                                         jfloatArray embedding,
+                                         jboolean with_logits) {
+  Engine::Session* session =
+      reinterpret_cast<Engine::Session*>(session_pointer);
+  std::vector<float> row = JFloatArrayToVector(env, embedding);
+  std::vector<float> hidden_states;
+  std::vector<float> logits;
+  auto status = session->RunDecodeEmbedding(row, &hidden_states,
+                                            with_logits ? &logits : nullptr);
+  if (!status.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "Failed to decode embedding: " + status.ToString());
+    return nullptr;
+  }
+  ScopedLocalRef<jclass> float_array_class(env, env->FindClass("[F"));
+  jobjectArray outputs =
+      env->NewObjectArray(2, float_array_class.get(), nullptr);
+  if (outputs == nullptr) {
+    return nullptr;
+  }
+  ScopedLocalRef<jfloatArray> hidden_states_array(
+      env, ToJavaFloatArray(env, hidden_states));
+  env->SetObjectArrayElement(outputs, 0, hidden_states_array.get());
+  if (with_logits) {
+    ScopedLocalRef<jfloatArray> logits_array(env,
+                                             ToJavaFloatArray(env, logits));
+    env->SetObjectArrayElement(outputs, 1, logits_array.get());
+  }
+  return outputs;
+}
+
+LITERTLM_JNIEXPORT void JNICALL JNI_METHOD(nativeSessionRewindToStep)(
+    JNIEnv* env, jclass thiz, jlong session_pointer, jint step) {
+  Engine::Session* session =
+      reinterpret_cast<Engine::Session*>(session_pointer);
+  auto status = session->RewindToStep(step);
+  if (!status.ok()) {
+    ThrowLiteRtLmJniException(env,
+                              "Failed to rewind session: " + status.ToString());
+  }
+}
+
+LITERTLM_JNIEXPORT jint JNICALL JNI_METHOD(nativeSessionGetCurrentStep)(
+    JNIEnv* env, jclass thiz, jlong session_pointer) {
+  Engine::Session* session =
+      reinterpret_cast<Engine::Session*>(session_pointer);
+  auto step = session->GetCurrentStep();
+  if (!step.ok()) {
+    ThrowLiteRtLmJniException(
+        env, "Failed to get the current step: " + step.status().ToString());
+    return -1;
+  }
+  return *step;
 }
 
 LITERTLM_JNIEXPORT jstring JNICALL JNI_METHOD(nativeGenerateContent)(
