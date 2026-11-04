@@ -291,6 +291,15 @@ class LlmExecutorBase {
         "GetContext not implemented for backend: ", ExecutorBackendName()));
   };
 
+  // Like `CloneContext()`, but may move the state (e.g. the KV cache) of the
+  // current context into the returned context instead of copying it, e.g. to
+  // switch to another context. The next call must then be `RestoreContext()`,
+  // which gives the executor the state of the restored context, or a zeroed
+  // one for a context at step 0.
+  virtual absl::StatusOr<std::unique_ptr<LlmContext>> TakeContext() {
+    return CloneContext();
+  }
+
   // Sets the llm_context and performs necessary operations to make sure the
   // model is restored with the provided llm context.
   virtual absl::Status RestoreContext(

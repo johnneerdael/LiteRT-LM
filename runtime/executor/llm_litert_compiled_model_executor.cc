@@ -1706,6 +1706,10 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::RestoreState(
   if (state->GetBatchSize() > 1) {
     decode_state_ = std::move(state);
   } else {
+    // Keep the replaced state as the spare of `TakeContext()`.
+    if (state_ != nullptr && spare_state_ == nullptr) {
+      spare_state_ = std::move(state_);
+    }
     state_ = std::move(state);
   }
   return absl::OkStatus();
@@ -1748,6 +1752,28 @@ LlmLiteRtCompiledModelExecutorBase::CloneContext() const {
                                       std::move(new_runtime_state));
 }
 
+absl::StatusOr<std::unique_ptr<LlmContext>>
+LlmLiteRtCompiledModelExecutorBase::TakeContext() {
+  // Multi-candidate decoding keeps a decode state besides `state_`; copy it.
+  if (state_ == nullptr || decode_state_ != nullptr ||
+      llm_context_->runtime_config().output_heads.value_or(1) > 1) {
+    return CloneContext();
+  }
+  // The next context without a state of its own needs one.
+  if (spare_state_ == nullptr) {
+    ABSL_ASSIGN_OR_RETURN(spare_state_, state_->CreateCleared());
+  }
+  ProcessedTokens processed_tokens =
+      llm_context_->processed_context().processed_tokens();
+  auto processed_context = std::make_unique<LlmProcessedContext>(
+      /*lora_id=*/std::nullopt, std::move(state_),
+      std::move(processed_tokens));
+  return std::make_unique<LlmContext>(
+      std::move(processed_context),
+      std::make_unique<RuntimeConfig>(llm_context_->runtime_config()),
+      std::make_unique<RuntimeState>(llm_context_->runtime_state()));
+}
+
 absl::Status LlmLiteRtCompiledModelExecutorBase::RestoreContext(
     std::unique_ptr<LlmContext> context_data) {
   llm_context_ = std::move(context_data);
@@ -1763,7 +1789,13 @@ absl::Status LlmLiteRtCompiledModelExecutorBase::RestoreContext(
         static_cast<LlmProcessedContext&>(llm_context_->processed_context())
             .state());
     ABSL_RETURN_IF_ERROR(RestoreState(std::move(restored_state)));
-  } else {
+  }
+  // `TakeContext()` moved the state of the previous context away.
+  if (state_ == nullptr) {
+    RET_CHECK(spare_state_ != nullptr) << "No state to restore the context.";
+    state_ = std::move(spare_state_);
+    ABSL_RETURN_IF_ERROR(Reset());
+  } else if (llm_context_->runtime_state().current_step == 0) {
     ABSL_RETURN_IF_ERROR(Reset());
   }
 

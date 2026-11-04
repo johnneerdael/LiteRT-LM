@@ -76,6 +76,9 @@ class LitertState : public StateInterface {
 
   absl::StatusOr<std::unique_ptr<StateInterface>> DeepCopy() const override;
 
+  absl::StatusOr<std::unique_ptr<StateInterface>> CreateCleared()
+      const override;
+
   bool Contains(absl::string_view tensor_name) const override;
 
   absl::Status Clear() override;

@@ -33,11 +33,10 @@ class EmbeddingStep(val hidden: FloatArray, val logits: FloatArray?)
  * context. Created by [Engine.createEmbeddingSession].
  *
  * The session shares the engine's loaded model with the engine's other sessions and conversations,
- * and holds its own context: switching from a session in progress to another one copies its model
- * state (e.g. KV cache), which takes long on GPU. Switching from a session that was [reset] or
- * closed copies nothing, so [reset] a session as soon as its sequence is done. The calls are
- * blocking; do not call them concurrently with each other or with calls of another session or
- * conversation of the same engine.
+ * and holds its own context: a session in progress keeps its own model state buffers (e.g. KV
+ * cache), which a switch between sessions hands over without copying them. A session that was
+ * [reset] or closed holds none. The calls are blocking; do not call them concurrently with each
+ * other or with calls of another session or conversation of the same engine.
  *
  * @param handle The pointer to the underlying native session object.
  */
@@ -111,8 +110,7 @@ class EmbeddingSession internal constructor(private val handle: Long) : AutoClos
 
   /**
    * Starts a new sequence: rewinds the session to position 0 with a zeroed model state. Its old
-   * state is discarded, so the engine can then switch to another session or conversation without
-   * copying it.
+   * state is discarded.
    *
    * @throws IllegalStateException if the session is not alive.
    */

@@ -110,6 +110,11 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
 
   absl::StatusOr<std::unique_ptr<LlmContext>> CloneContext() const override;
 
+  // Moves the state into the returned context. The next `RestoreContext()` of a
+  // context without a state (at step 0) zeroes a spare state: the one that the
+  // last restore replaced, or one allocated like the moved state.
+  absl::StatusOr<std::unique_ptr<LlmContext>> TakeContext() override;
+
   absl::Status RestoreContext(
       std::unique_ptr<LlmContext> context_data) override;
 
@@ -211,6 +216,10 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   const MtpGatingPolicy* mtp_gating_policy_for_testing() const {
     return speculative_decoding_controller_.gating_policy();
   }
+
+  // For testing only: Returns the state (e.g. the KV cache) of the current
+  // context.
+  const StateInterface* state_for_testing() const { return state_.get(); }
 
   const ProcessedTokens& processed_tokens_for_testing() const {
     return llm_context_->processed_context().processed_tokens();
@@ -493,6 +502,9 @@ class LlmLiteRtCompiledModelExecutorBase : public LlmExecutor {
   absl::flat_hash_map<absl::string_view, TensorBuffer> decode_output_buffers_;
   std::unique_ptr<StateInterface> state_;
   std::unique_ptr<StateInterface> decode_state_;
+  // A state of the same buffers as `state_` that no context holds, for the
+  // next context without a state of its own. See `TakeContext()`.
+  std::unique_ptr<StateInterface> spare_state_;
 
   // The signatures of the model.
   ModelSignatures signatures_;

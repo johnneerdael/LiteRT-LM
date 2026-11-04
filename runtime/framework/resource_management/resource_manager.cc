@@ -855,8 +855,10 @@ ResourceManager::AcquireExecutorWithContextHandler(
         current_runtime_state =
             std::make_unique<RuntimeState>(std::move(runtime_state));
       } else {
+        // Takes the state instead of copying it: the new context restores its
+        // own state right after.
         ABSL_ASSIGN_OR_RETURN(auto current_llm_context,
-                              llm_executor_->CloneContext());
+                              llm_executor_->TakeContext());
         ABSL_ASSIGN_OR_RETURN(current_runtime_config,
                               current_llm_context->RetrieveRuntimeConfig());
         ABSL_ASSIGN_OR_RETURN(current_runtime_state,
