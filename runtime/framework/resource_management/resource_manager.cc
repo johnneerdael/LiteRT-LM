@@ -465,6 +465,26 @@ class LockedLlmExecutor : public LlmExecutor {
     return llm_executor_->VerifyDraft(draft_token_ids, decode_params);
   }
 
+  absl::Status PrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) override {
+    ABSL_RETURN_IF_ERROR(MaybeTruncateProcessedTokens());
+    return llm_executor_->PrefillEmbeddings(embeddings, last_hidden_states);
+  }
+
+  absl::Status DecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) override {
+    ABSL_RETURN_IF_ERROR(MaybeTruncateProcessedTokens());
+    return llm_executor_->DecodeEmbedding(embedding, hidden_states, logits);
+  }
+
+  absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) override {
+    return llm_executor_->LookupTokenEmbedding(token_id);
+  }
+
   absl::Status Reset() override { return llm_executor_->Reset(); }
 
   absl::StatusOr<int> GetVocabSize() override {

@@ -19,6 +19,7 @@
 // positions, attention mask and KV cache contents that the executor used to
 // produce it.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -764,6 +765,147 @@ TEST_P(FakeLmDraftVerificationTest, ConstraintAcceptsTheDraftsThatFollowIt) {
               ElementsAre(ElementsAre(kForcedTokens[num_forced])));
 }
 
+TEST_P(FakeLmExecutorTest, EmbeddingStepsNeedAModelWithEmbeddingInput) {
+  if (GetParam().embedder_file.has_value()) {
+    GTEST_SKIP() << "The model takes input embeddings.";
+  }
+  const std::vector<float> embedding(4, 0.0f);
+  EXPECT_THAT(executor_->PrefillEmbeddings(embedding, nullptr),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(executor_->DecodeEmbedding(embedding, nullptr, nullptr),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+}
+
+// Runs the embedding step APIs with the fake LM that takes input embeddings,
+// whose prefill signature takes 8 rows and which has no hidden states output.
+class FakeLmEmbeddingStepTest : public FakeLmExecutorTest {
+ protected:
+  // Returns the embedder's rows for `tokens`, concatenated.
+  absl::StatusOr<std::vector<float>> Embed(absl::Span<const int> tokens) {
+    std::vector<float> rows;
+    for (int token : tokens) {
+      ABSL_ASSIGN_OR_RETURN(std::vector<float> row,
+                            executor_->LookupTokenEmbedding(token));
+      rows.insert(rows.end(), row.begin(), row.end());
+    }
+    return rows;
+  }
+
+  // Prefills the embeddings of `tokens` and appends them to `context_`.
+  absl::Status PrefillEmbeddings(absl::Span<const int> tokens) {
+    ABSL_ASSIGN_OR_RETURN(std::vector<float> rows, Embed(tokens));
+    ABSL_RETURN_IF_ERROR(executor_->PrefillEmbeddings(rows, nullptr));
+    context_.insert(context_.end(), tokens.begin(), tokens.end());
+    return absl::OkStatus();
+  }
+
+  // Runs a step with the embedding of `token`, appends it to `context_` and
+  // returns the token with the largest logit.
+  absl::StatusOr<int> DecodeEmbedding(int token) {
+    ABSL_ASSIGN_OR_RETURN(std::vector<float> row, Embed({token}));
+    std::vector<float> logits;
+    ABSL_RETURN_IF_ERROR(executor_->DecodeEmbedding(row, nullptr, &logits));
+    if (logits.size() != kFakeLmVocabSize) {
+      return absl::InternalError(
+          absl::StrCat("Got ", logits.size(), " logits."));
+    }
+    context_.push_back(token);
+    return static_cast<int>(std::max_element(logits.begin(), logits.end()) -
+                            logits.begin());
+  }
+
+  // Runs `num_steps` steps with the embeddings of the fake LM's predictions,
+  // expecting the logits to predict the next ones.
+  void DecodeEmbeddingsAndExpectFakeLmTokens(int num_steps) {
+    for (int step = 0; step < num_steps; ++step) {
+      SCOPED_TRACE(::testing::Message() << "Context size: " << context_.size());
+      ASSERT_OK_AND_ASSIGN(int predicted,
+                           DecodeEmbedding(FakeLmNextToken(context_)));
+      EXPECT_EQ(predicted, FakeLmNextToken(context_));
+      EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(context_.size()));
+    }
+  }
+};
+
+TEST_P(FakeLmEmbeddingStepTest, LooksUpTheEmbedderRows) {
+  ASSERT_OK_AND_ASSIGN(std::vector<float> row,
+                       executor_->LookupTokenEmbedding(3));
+  EXPECT_EQ(row.size(), 4);
+}
+
+TEST_P(FakeLmEmbeddingStepTest, DecodeEmbeddingAfterPrefillEmbeddings) {
+  // One chunk of the prefill signature and three decode steps.
+  ASSERT_OK(PrefillEmbeddings({3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}));
+  EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(11));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(5));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, DecodeEmbeddingWithoutOutputs) {
+  ASSERT_OK(PrefillEmbeddings({3, 1, 4}));
+  ASSERT_OK_AND_ASSIGN(std::vector<float> row, Embed({1}));
+  ASSERT_OK(executor_->DecodeEmbedding(row, nullptr, nullptr));
+  context_.push_back(1);
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(2));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, ProcessesThePendingTokenOfAPrefill) {
+  ASSERT_OK(Prefill({3, 1, 4}));
+  ASSERT_OK(PrefillEmbeddings({1, 5}));
+  EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(5));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, DecodeEmbeddingProcessesThePendingToken) {
+  ASSERT_OK(Prefill({3, 1, 4, 1, 5, 9, 2, 6, 5}));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, PrefillAndDecodeAfterEmbeddingSteps) {
+  ASSERT_OK(PrefillEmbeddings({3, 1, 4}));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(2));
+  ASSERT_OK(Prefill({1, 5, 9}));
+  ASSERT_NO_FATAL_FAILURE(DecodeAndExpectFakeLmTokens(/*num_steps=*/3));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(2));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, EmbeddingStepsAfterRewind) {
+  ASSERT_OK(PrefillEmbeddings({3, 1, 4, 1, 5, 9}));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
+  ASSERT_OK(Rewind(4));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
+  ASSERT_OK(Rewind(0));
+  ASSERT_OK(PrefillEmbeddings({2, 7, 1, 8}));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(3));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, FailsWhenTheContextIsFull) {
+  std::vector<int> tokens(kFakeLmContextSize - 1, 1);
+  ASSERT_OK(PrefillEmbeddings(tokens));
+  ASSERT_NO_FATAL_FAILURE(DecodeEmbeddingsAndExpectFakeLmTokens(1));
+  ASSERT_OK_AND_ASSIGN(std::vector<float> row, Embed({1}));
+  EXPECT_THAT(executor_->DecodeEmbedding(row, nullptr, nullptr),
+              StatusIs(absl::StatusCode::kOutOfRange));
+  EXPECT_THAT(executor_->PrefillEmbeddings(row, nullptr),
+              StatusIs(absl::StatusCode::kOutOfRange));
+}
+
+TEST_P(FakeLmEmbeddingStepTest, RejectsInvalidInputs) {
+  const std::vector<float> rows(6, 0.0f);
+  EXPECT_THAT(executor_->PrefillEmbeddings(rows, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(executor_->PrefillEmbeddings({}, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(executor_->DecodeEmbedding(rows, nullptr, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  // The fake LM has no hidden states output.
+  std::vector<float> hidden_states;
+  EXPECT_THAT(
+      executor_->DecodeEmbedding(absl::MakeConstSpan(rows).first(4),
+                                 &hidden_states, nullptr),
+      StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(0));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     FakeLms, FakeLmExecutorTest,
     ::testing::Values(
@@ -794,6 +936,16 @@ INSTANTIATE_TEST_SUITE_P(
         FakeLmTestCase{.name = "EmbeddingInput",
                        .model_file = "checksum_fake_lm_embedding_input.tflite",
                        .embedder_file = "checksum_fake_lm_embedder.tflite"}),
+    [](const ::testing::TestParamInfo<FakeLmTestCase>& info) {
+      return info.param.name;
+    });
+
+INSTANTIATE_TEST_SUITE_P(
+    FakeLms, FakeLmEmbeddingStepTest,
+    ::testing::Values(FakeLmTestCase{
+        .name = "EmbeddingInput",
+        .model_file = "checksum_fake_lm_embedding_input.tflite",
+        .embedder_file = "checksum_fake_lm_embedder.tflite"}),
     [](const ::testing::TestParamInfo<FakeLmTestCase>& info) {
       return info.param.name;
     });

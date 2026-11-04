@@ -305,6 +305,37 @@ absl::Status FakeLlmExecutor::Reset() {
   return absl::OkStatus();
 }
 
+absl::Status FakeLlmExecutor::PrefillEmbeddings(
+    absl::Span<const float> embeddings,
+    std::vector<float>* absl_nullable last_hidden_states) {
+  if (embeddings.empty() || embeddings.size() % kFakeEmbeddingDimension != 0) {
+    return absl::InvalidArgumentError("Invalid input embeddings.");
+  }
+  current_step_ += embeddings.size() / kFakeEmbeddingDimension;
+  if (last_hidden_states != nullptr) {
+    auto last_row = embeddings.last(kFakeEmbeddingDimension);
+    last_hidden_states->assign(last_row.begin(), last_row.end());
+  }
+  return absl::OkStatus();
+}
+
+absl::Status FakeLlmExecutor::DecodeEmbedding(
+    absl::Span<const float> embedding,
+    std::vector<float>* absl_nullable hidden_states,
+    std::vector<float>* absl_nullable logits) {
+  if (embedding.size() != kFakeEmbeddingDimension) {
+    return absl::InvalidArgumentError("Invalid input embedding.");
+  }
+  ++current_step_;
+  if (hidden_states != nullptr) {
+    hidden_states->assign(embedding.begin(), embedding.end());
+  }
+  if (logits != nullptr) {
+    logits->assign(vocab_size_, 0.0f);
+  }
+  return absl::OkStatus();
+}
+
 absl::Status FakeLlmExecutor::CheckDraftVerificationSupport() const {
   if (draft_verification_support_.has_value()) {
     return *draft_verification_support_;

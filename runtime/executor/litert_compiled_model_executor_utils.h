@@ -86,6 +86,9 @@ struct ModelSignatures {
   std::optional<std::string> input_int32_param;
   // Output logits signature name. Necessary for decode.
   std::string output_logits;
+  // Output hidden states signature name, i.e. the output of the last layer
+  // before the logits. Not all models have this output.
+  std::optional<std::string> output_hidden_states;
 };
 
 // Get the corresponding ModelSignatures struct for the given model using

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "absl/base/attributes.h"  // from @com_google_absl
+#include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/functional/any_invocable.h"  // from @com_google_absl
 #include "absl/log/absl_log.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
@@ -27,6 +28,7 @@
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "runtime/components/model_resources.h"
 #include "runtime/engine/engine_settings.h"
@@ -348,6 +350,39 @@ class SessionInterface {
   // Get the current step of the session.
   virtual absl::StatusOr<int> GetCurrentStep() const {
     return absl::UnimplementedError("GetCurrentStep not implemented.");
+  }
+
+  // ------------Embedding step APIs------------:
+  // For models that take input embeddings, e.g. a speech generation loop that
+  // feeds back embeddings computed from the model's hidden states. Each row of
+  // input embeddings (the width of the model's embeddings input) takes one
+  // step. The calls run synchronously in the context of the session and
+  // process all of their rows: the next text input must be given by
+  // `RunPrefill()`. They must not overlap with other calls of the session.
+
+  // Prefills `embeddings`, one or more rows of input embeddings. If
+  // `last_hidden_states` is not null, it receives the hidden states (the
+  // output of the model's last layer) of the last row.
+  virtual absl::Status RunPrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) {
+    return absl::UnimplementedError("RunPrefillEmbeddings not implemented.");
+  }
+
+  // Runs one step with the input embedding row `embedding`, without sampling.
+  // If `hidden_states` is not null, it receives the hidden states of the step.
+  // If `logits` is not null, it receives the logits of the step; a step
+  // without logits may skip computing them.
+  virtual absl::Status RunDecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) {
+    return absl::UnimplementedError("RunDecodeEmbedding not implemented.");
+  }
+
+  // Returns the input embedding row of the text token `token_id`.
+  virtual absl::StatusOr<std::vector<float>> GetTokenEmbedding(int token_id) {
+    return absl::UnimplementedError("GetTokenEmbedding not implemented.");
   }
 
   // Get the reference to the session config for the session.
