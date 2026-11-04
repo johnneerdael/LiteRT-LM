@@ -209,6 +209,10 @@ absl::Status ThreadedExecutionManager::ReleaseSession(SessionId session_id) {
   if (runtime_debugger_ != nullptr) {
     runtime_debugger_->UnregisterDebugSession(session_id);
   }
+  // Nothing restores the context of the released session, so the next switch
+  // to another session needn't save it.
+  resource_manager_->ReleaseContextHandler(
+      session_lookup_.at(session_id)->context_handler);
   session_lookup_.erase(session_id);
   if (session_lookup_.empty()) {
     resource_manager_->ResetCurrentHandler();

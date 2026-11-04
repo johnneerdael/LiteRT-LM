@@ -57,6 +57,10 @@
 #include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/executor/llm_executor_settings.h"
 #include "runtime/executor/llm_litert_compiled_model_executor.h"
+#include "runtime/engine/engine_settings.h"
+#include "runtime/executor/llm_executor.h"
+#include "runtime/framework/resource_management/context_handler/context_handler.h"
+#include "runtime/framework/resource_management/resource_manager.h"
 #include "runtime/proto/llm_metadata.pb.h"
 #include "runtime/util/convert_tensor_buffer.h"
 #include "runtime/util/test_utils.h"  // IWYU pragma: keep
@@ -904,6 +908,113 @@ TEST_P(FakeLmEmbeddingStepTest, RejectsInvalidInputs) {
                                  &hidden_states, nullptr),
       StatusIs(absl::StatusCode::kFailedPrecondition));
   EXPECT_THAT(executor_->GetCurrentStep(), IsOkAndHolds(0));
+}
+
+// Prefills the embedder's rows for `tokens` with `executor`.
+absl::Status PrefillTokenEmbeddings(LlmExecutor& executor,
+                                    absl::Span<const int> tokens) {
+  std::vector<float> rows;
+  for (int token : tokens) {
+    ABSL_ASSIGN_OR_RETURN(std::vector<float> row,
+                          executor.LookupTokenEmbedding(token));
+    rows.insert(rows.end(), row.begin(), row.end());
+  }
+  return executor.PrefillEmbeddings(rows, nullptr);
+}
+
+// Runs a step with the embedder's row for `token` with `executor` and returns
+// the token with the largest logit.
+absl::StatusOr<int> DecodeTokenEmbedding(LlmExecutor& executor, int token) {
+  ABSL_ASSIGN_OR_RETURN(std::vector<float> row,
+                        executor.LookupTokenEmbedding(token));
+  std::vector<float> logits;
+  ABSL_RETURN_IF_ERROR(executor.DecodeEmbedding(row, nullptr, &logits));
+  return static_cast<int>(std::max_element(logits.begin(), logits.end()) -
+                          logits.begin());
+}
+
+// Alternates between a context that runs embedding steps (e.g. speech
+// generation) and text contexts through the ResourceManager, as sessions of
+// an engine do: switching away from a context at step 0 or from a released
+// context saves no state, and every context still sees its own tokens only.
+TEST_P(FakeLmEmbeddingStepTest, SwitchesBetweenContextsOfAResourceManager) {
+  ASSERT_OK_AND_ASSIGN(
+      auto resource_manager,
+      ResourceManager::Create(/*model_resources=*/nullptr,
+                              std::move(executor_),
+                              /*vision_executor_settings=*/nullptr,
+                              /*audio_executor_settings=*/nullptr,
+                              /*litert_env=*/nullptr));
+  SessionConfig session_config = SessionConfig::CreateDefault();
+  session_config.GetMutableSamplerParams() = GreedySamplerParams();
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<ContextHandler> speech,
+                       resource_manager->CreateContextHandler(session_config));
+
+  // Runs `tokens` as embeddings in the speech context, from step
+  // `context.size()`, and expects its predictions after `steps` more tokens.
+  std::vector<int> speech_context;
+  auto run_speech = [&](absl::Span<const int> tokens, int steps) {
+    ASSERT_OK_AND_ASSIGN(
+        auto executor,
+        resource_manager->AcquireExecutorWithContextHandler(speech));
+    ASSERT_OK(PrefillTokenEmbeddings(*executor, tokens));
+    speech_context.insert(speech_context.end(), tokens.begin(), tokens.end());
+    for (int i = 0; i < steps; ++i) {
+      const int token = FakeLmNextToken(speech_context);
+      speech_context.push_back(token);
+      EXPECT_THAT(DecodeTokenEmbedding(*executor, token),
+                  IsOkAndHolds(FakeLmNextToken(speech_context)));
+    }
+    EXPECT_THAT(executor->GetCurrentStep(),
+                IsOkAndHolds(speech_context.size()));
+  };
+  auto reset_speech = [&]() {
+    ASSERT_OK_AND_ASSIGN(
+        auto executor,
+        resource_manager->AcquireExecutorWithContextHandler(speech));
+    ASSERT_OK(executor->SetCurrentStep(0));
+    speech_context.clear();
+  };
+  // Prefills `tokens` in `text` and expects the fake LM's predictions.
+  auto run_text = [&](std::shared_ptr<ContextHandler> text,
+                      std::vector<int> tokens) {
+    ASSERT_OK_AND_ASSIGN(
+        auto executor,
+        resource_manager->AcquireExecutorWithContextHandler(text));
+    LITERT_ASSERT_OK_AND_ASSIGN(
+        auto tokens_buffer,
+        CopyToTensorBuffer<int>(absl::MakeConstSpan(tokens),
+                                {1, static_cast<int>(tokens.size())}));
+    ExecutorInputs inputs;
+    inputs.SetTextData(ExecutorTextData(std::move(tokens_buffer)));
+    ASSERT_OK(executor->Prefill(inputs));
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_OK_AND_ASSIGN(auto output_tokens, executor->Decode());
+      ASSERT_EQ(output_tokens.size(), 1);
+      ASSERT_EQ(output_tokens[0].size(), 1);
+      EXPECT_EQ(output_tokens[0][0], FakeLmNextToken(tokens));
+      tokens.push_back(output_tokens[0][0]);
+    }
+  };
+
+  ASSERT_NO_FATAL_FAILURE(run_speech({3, 1, 4, 1, 5}, 3));
+  // A reset speech context, then a text context that is released.
+  ASSERT_NO_FATAL_FAILURE(reset_speech());
+  {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ContextHandler> text,
+        resource_manager->CreateContextHandler(session_config));
+    ASSERT_NO_FATAL_FAILURE(run_text(text, {2, 7, 1, 8}));
+    resource_manager->ReleaseContextHandler(text);
+  }
+  ASSERT_NO_FATAL_FAILURE(run_speech({9, 2, 6}, 3));
+  // A speech context in progress, then a text context that is kept.
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<ContextHandler> text,
+                       resource_manager->CreateContextHandler(session_config));
+  ASSERT_NO_FATAL_FAILURE(run_text(text, {6, 2, 8, 3, 1, 8, 5}));
+  ASSERT_NO_FATAL_FAILURE(run_speech({5, 3}, 2));
+  ASSERT_NO_FATAL_FAILURE(reset_speech());
+  ASSERT_NO_FATAL_FAILURE(run_speech({2, 7}, 2));
 }
 
 INSTANTIATE_TEST_SUITE_P(

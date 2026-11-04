@@ -570,6 +570,7 @@ cc_test(
     deps = [
         ":executor_settings_base",
         ":executor_stats",
+        ":llm_executor",
         ":llm_executor_io_types",
         ":llm_executor_settings",
         ":llm_litert_compiled_model_executor",
@@ -591,6 +592,9 @@ cc_test(
         "//runtime/components/constrained_decoding:constrained_decoder",
         "//runtime/components/constrained_decoding:constraint",
         "//runtime/components/constrained_decoding:fake_constraint",
+        "//runtime/engine:engine_settings",
+        "//runtime/framework/resource_management:resource_manager",
+        "//runtime/framework/resource_management/context_handler",
         "//runtime/proto:llm_metadata_cc_proto",
         "//runtime/util:convert_tensor_buffer",
         "//runtime/util:test_utils",
