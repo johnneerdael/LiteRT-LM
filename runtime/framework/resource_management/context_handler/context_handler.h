@@ -169,6 +169,12 @@ class ContextHandler::SharedProcessedContext {
                     handlers_.end());
   }
 
+  // Returns the number of handlers that share this SharedProcessedContext.
+  int NumHandlers() const {
+    absl::MutexLock lock(&handlers_mutex_);
+    return handlers_.size();
+  }
+
   // Returns the number of tokens in the longest handler.
   absl::StatusOr<int> LongestHandlerTimeStep(LlmExecutor& llm_executor) const;
 

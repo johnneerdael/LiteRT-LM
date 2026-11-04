@@ -159,6 +159,14 @@ class ResourceManager {
   // Resets the LLM executor and clears the current context handler.
   void ResetCurrentHandler() ABSL_LOCKS_EXCLUDED(executor_mutex_);
 
+  // Releases `context_handler`, e.g. of a session that is being deleted. If it
+  // is the current handler and no other handler shares its processed context,
+  // the next switch to another handler doesn't save its context (e.g. a copy
+  // of the KV cache), which nothing could restore.
+  void ReleaseContextHandler(
+      const std::shared_ptr<ContextHandler>& context_handler)
+      ABSL_LOCKS_EXCLUDED(executor_mutex_);
+
   // Updates whether to enable Metal residency set on GPU at runtime.
   absl::Status UpdateGpuEnableMetalResidencySet(bool enable_metal_residency_set)
       ABSL_LOCKS_EXCLUDED(executor_mutex_);

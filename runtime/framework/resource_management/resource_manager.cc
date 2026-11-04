@@ -812,14 +812,42 @@ ResourceManager::AcquireExecutorWithContextHandler(
     // current handler, clone the processed context to the new handler. Then
     // restore the executor with the new LlmContext.
     if (current_handler_ != nullptr) {
-      ABSL_ASSIGN_OR_RETURN(auto current_llm_context,
-                            llm_executor_->CloneContext());
-      ABSL_ASSIGN_OR_RETURN(auto current_runtime_config,
-                            current_llm_context->RetrieveRuntimeConfig());
-      ABSL_ASSIGN_OR_RETURN(auto current_runtime_state,
-                            current_llm_context->RetrieveRuntimeState());
-      ABSL_ASSIGN_OR_RETURN(auto current_processed_context,
-                            current_llm_context->RetrieveProcessedContext());
+      std::unique_ptr<RuntimeConfig> current_runtime_config;
+      std::unique_ptr<RuntimeState> current_runtime_state;
+      std::unique_ptr<ProcessedContext> current_processed_context;
+      // Executors that can't report their runtime state or config (e.g. the
+      // NPU executor) keep saving a copy, as before.
+      absl::StatusOr<RuntimeState> runtime_state =
+          llm_executor_->GetRuntimeState();
+      absl::StatusOr<RuntimeConfig> runtime_config =
+          runtime_state.ok() ? llm_executor_->GetRuntimeConfig()
+                             : absl::StatusOr<RuntimeConfig>(
+                                   runtime_state.status());
+      if (runtime_config.ok() && runtime_state->current_step == 0 &&
+          current_handler_->shared_processed_context()->NumHandlers() == 1) {
+        // A context at step 0 needs no state: restoring it resets the state
+        // buffers. Save a new processed context instead of copying them (e.g.
+        // the KV cache, which takes long to copy on GPU).
+        ABSL_ASSIGN_OR_RETURN(
+            auto new_llm_context,
+            llm_executor_->CreateNewContext(/*lora_id=*/std::nullopt,
+                                            *runtime_config));
+        ABSL_ASSIGN_OR_RETURN(current_processed_context,
+                              new_llm_context->RetrieveProcessedContext());
+        current_runtime_config =
+            std::make_unique<RuntimeConfig>(*std::move(runtime_config));
+        current_runtime_state =
+            std::make_unique<RuntimeState>(*std::move(runtime_state));
+      } else {
+        ABSL_ASSIGN_OR_RETURN(auto current_llm_context,
+                              llm_executor_->CloneContext());
+        ABSL_ASSIGN_OR_RETURN(current_runtime_config,
+                              current_llm_context->RetrieveRuntimeConfig());
+        ABSL_ASSIGN_OR_RETURN(current_runtime_state,
+                              current_llm_context->RetrieveRuntimeState());
+        ABSL_ASSIGN_OR_RETURN(current_processed_context,
+                              current_llm_context->RetrieveProcessedContext());
+      }
 
       ABSL_RETURN_IF_ERROR(current_handler_->SetRuntimeConfig(
           std::move(current_runtime_config)));
@@ -972,6 +1000,17 @@ ResourceManager::GetVisionExecutorProperties() {
   ABSL_RETURN_IF_ERROR(TryLoadingVisionExecutor());
   absl::MutexLock lock(vision_executor_mutex_);
   return vision_executor_->GetVisionExecutorProperties();
+}
+
+void ResourceManager::ReleaseContextHandler(
+    const std::shared_ptr<ContextHandler>& context_handler) {
+  absl::MutexLock lock(executor_mutex_);
+  if (context_handler != nullptr && context_handler == current_handler_ &&
+      context_handler->shared_processed_context()->NumHandlers() == 1) {
+    // The executor keeps the released context until the next switch, which
+    // restores the context of the new handler without saving it.
+    current_handler_ = nullptr;
+  }
 }
 
 void ResourceManager::ResetCurrentHandler() {
