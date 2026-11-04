@@ -306,6 +306,52 @@ absl::StatusOr<std::unique_ptr<StateInterface>> LitertState::DeepCopy() const {
   return copy;
 }
 
+absl::StatusOr<std::unique_ptr<StateInterface>> LitertState::CreateCleared()
+    const {
+  // Allocates a buffer like `buffer`, zeroed, without copying its contents.
+  auto create_cleared = [this](const TensorBuffer& buffer)
+      -> absl::StatusOr<TensorBuffer> {
+    LITERT_ASSIGN_OR_RETURN(auto tensor_type, buffer.TensorType());
+    LITERT_ASSIGN_OR_RETURN(auto buffer_type, buffer.BufferType());
+    LITERT_ASSIGN_OR_RETURN(auto buffer_size, buffer.Size());
+    LITERT_ASSIGN_OR_RETURN(auto new_buffer,
+                            TensorBuffer::CreateManaged(env_, buffer_type,
+                                                        tensor_type,
+                                                        buffer_size));
+    LITERT_RETURN_IF_ERROR(new_buffer.Clear());
+    return new_buffer;
+  };
+  auto create_bank = [&create_cleared](
+                         const absl::flat_hash_map<std::string, StateBuffer>&
+                             bank)
+      -> absl::StatusOr<absl::flat_hash_map<std::string, StateBuffer>> {
+    absl::flat_hash_map<std::string, StateBuffer> new_bank;
+    for (const auto& [name, state_buffer] : bank) {
+      ABSL_ASSIGN_OR_RETURN(auto buffer, create_cleared(state_buffer.buffer));
+      new_bank[name] = StateBuffer{
+          .buffer = std::move(buffer),
+          .type = state_buffer.type,
+          .dynamic_dim = state_buffer.dynamic_dim,
+      };
+    }
+    return new_bank;
+  };
+  ABSL_ASSIGN_OR_RETURN(auto bank_1_state_buffers,
+                        create_bank(bank_1_state_buffers_));
+  std::optional<absl::flat_hash_map<std::string, StateBuffer>>
+      bank_2_state_buffers;
+  if (bank_2_state_buffers_.has_value()) {
+    ABSL_ASSIGN_OR_RETURN(bank_2_state_buffers,
+                          create_bank(*bank_2_state_buffers_));
+  }
+  auto state = absl::WrapUnique(new LitertState(
+      batch_size_, num_entries_, env_, std::move(bank_1_state_buffers),
+      std::move(bank_2_state_buffers), allocation_policy_));
+  state->bank_1_is_input_ = bank_1_is_input_;
+  state->verified_gpu_inplace_signatures_ = verified_gpu_inplace_signatures_;
+  return state;
+}
+
 bool LitertState::IsHostMemory() const {
   auto is_host = [](const StateBuffer& state_buffer) {
     auto buffer_type = state_buffer.buffer.BufferType();

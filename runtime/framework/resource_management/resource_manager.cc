@@ -812,8 +812,10 @@ ResourceManager::AcquireExecutorWithContextHandler(
     // current handler, clone the processed context to the new handler. Then
     // restore the executor with the new LlmContext.
     if (current_handler_ != nullptr) {
+      // The executor restores the new handler's context right after this, so
+      // it may hand over its state buffers instead of copying them.
       ABSL_ASSIGN_OR_RETURN(auto current_llm_context,
-                            llm_executor_->CloneContext());
+                            llm_executor_->TakeContext());
       ABSL_ASSIGN_OR_RETURN(auto current_runtime_config,
                             current_llm_context->RetrieveRuntimeConfig());
       ABSL_ASSIGN_OR_RETURN(auto current_runtime_state,
@@ -840,7 +842,15 @@ ResourceManager::AcquireExecutorWithContextHandler(
     auto llm_context = std::make_unique<LlmContext>(
         std::move(new_processed_context), std::move(new_runtime_config),
         std::move(new_runtime_state));
-    ABSL_RETURN_IF_ERROR(llm_executor_->RestoreContext(std::move(llm_context)));
+    if (absl::Status restored =
+            llm_executor_->RestoreContext(std::move(llm_context));
+        !restored.ok()) {
+      // The outgoing context is saved, and the executor may have handed its
+      // state over to it: forget the current handler, so that the next switch
+      // restores the saved context instead of trusting the executor's.
+      current_handler_ = nullptr;
+      return restored;
+    }
   }
 
   // If the current handler has an audio context, update it from audio

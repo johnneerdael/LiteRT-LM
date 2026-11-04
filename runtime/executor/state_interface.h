@@ -19,6 +19,7 @@
 #include <string>
 
 #include "absl/status/status.h"  // from @com_google_absl
+#include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 
@@ -59,6 +60,15 @@ class StateInterface {
 
   // Deep copies the KV cache. This is an expensive operation. Use sparingly.
   virtual absl::StatusOr<std::unique_ptr<StateInterface>> DeepCopy() const = 0;
+
+  // Creates a KV cache of the same buffers as this one, all zeroed, without
+  // copying their contents. The default implementation deep copies and clears.
+  virtual absl::StatusOr<std::unique_ptr<StateInterface>> CreateCleared()
+      const {
+    ABSL_ASSIGN_OR_RETURN(auto state, DeepCopy());
+    ABSL_RETURN_IF_ERROR(state->Clear());
+    return state;
+  }
 
   // Returns true if this state container holds the tensor with the specified
   // `tensor_name`. The lookup maps to the signature input/output names of the

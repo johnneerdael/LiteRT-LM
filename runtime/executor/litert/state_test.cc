@@ -205,6 +205,42 @@ TEST_F(LitertStateTest, IsHostMemoryForCpuState) {
   EXPECT_TRUE(kv_cache_->IsHostMemory());
 }
 
+TEST_F(LitertStateTest, CreateClearedAllocatesZeroedBuffersLikeTheState) {
+  ASSERT_NO_FATAL_FAILURE(SetUpKV(kTestStaticModelPath,
+                                  LitertState::AllocationPolicy::kPingPong,
+                                  /*batch_size=*/1));
+  ASSERT_OK_AND_ASSIGN(
+      auto buffers,
+      kv_cache_->GetStateBuffers(*compiled_model_, kDecodeSignatureRunner));
+  for (auto& [_, buffer] : buffers.input_buffers) {
+    ASSERT_NO_FATAL_FAILURE(FillBuffer(buffer, 7));
+  }
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<StateInterface> cleared_interface,
+                       kv_cache_->CreateCleared());
+  auto* cleared = dynamic_cast<LitertState*>(cleared_interface.get());
+  ASSERT_NE(cleared, nullptr);
+  EXPECT_EQ(cleared->GetNumEntries(), kv_cache_->GetNumEntries());
+  EXPECT_EQ(cleared->GetBatchSize(), kv_cache_->GetBatchSize());
+  // The same bank comes next in both states.
+  ASSERT_OK_AND_ASSIGN(
+      auto cleared_buffers,
+      cleared->GetStateBuffers(*compiled_model_, kDecodeSignatureRunner));
+  ASSERT_OK_AND_ASSIGN(
+      auto next_buffers,
+      kv_cache_->GetStateBuffers(*compiled_model_, kDecodeSignatureRunner));
+  ASSERT_EQ(cleared_buffers.input_buffers.size(),
+            next_buffers.input_buffers.size());
+  for (auto& [name, buffer] : cleared_buffers.input_buffers) {
+    // New buffers, all zeros; the state keeps its own.
+    EXPECT_NE(buffer.Get(), next_buffers.input_buffers.at(name).Get()) << name;
+    ASSERT_NO_FATAL_FAILURE(ExpectBufferFilledWith(buffer, 0)) << name;
+  }
+  for (auto& [name, buffer] : buffers.input_buffers) {
+    ASSERT_NO_FATAL_FAILURE(ExpectBufferFilledWith(buffer, 7)) << name;
+  }
+}
+
 TEST_F(LitertStateTest, CopyContentsFromKeepsExistingBuffers) {
   ASSERT_NO_FATAL_FAILURE(SetUpKV(kTestStaticModelPath,
                                   LitertState::AllocationPolicy::kInplace,
