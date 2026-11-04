@@ -37,6 +37,7 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "@nlohmann_json//:json",
         "@litert//litert/c/internal:litert_logging",
         "@litert//litert/cc/internal:scoped_file",

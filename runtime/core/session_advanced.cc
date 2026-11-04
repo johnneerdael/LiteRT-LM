@@ -35,6 +35,7 @@
 #include "absl/strings/str_cat.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert  // IWYU pragma: keep
 #include "runtime/core/session_utils.h"
 #include "runtime/engine/engine.h"
@@ -630,6 +631,44 @@ absl::StatusOr<int> SessionAdvanced::GetCurrentStep() const {
     return absl::FailedPreconditionError("Execution manager is not available.");
   }
   return execution_manager_lock->GetCurrentStep(*session_info_);
+}
+
+absl::Status SessionAdvanced::RunPrefillEmbeddings(
+    absl::Span<const float> embeddings,
+    std::vector<float>* absl_nullable last_hidden_states) {
+  absl::MutexLock lock(mutex_);
+  auto execution_manager_lock = execution_manager_.lock();
+  if (execution_manager_lock == nullptr) {
+    return absl::FailedPreconditionError("Execution manager is not available.");
+  }
+  ABSL_RETURN_IF_ERROR(execution_manager_lock->PrefillEmbeddings(
+      *session_info_, embeddings, last_hidden_states));
+  session_state_ = SessionState::kPrefilled;
+  return absl::OkStatus();
+}
+
+absl::Status SessionAdvanced::RunDecodeEmbedding(
+    absl::Span<const float> embedding,
+    std::vector<float>* absl_nullable hidden_states,
+    std::vector<float>* absl_nullable logits) {
+  absl::MutexLock lock(mutex_);
+  auto execution_manager_lock = execution_manager_.lock();
+  if (execution_manager_lock == nullptr) {
+    return absl::FailedPreconditionError("Execution manager is not available.");
+  }
+  ABSL_RETURN_IF_ERROR(execution_manager_lock->DecodeEmbedding(
+      *session_info_, embedding, hidden_states, logits));
+  session_state_ = SessionState::kPrefilled;
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<float>> SessionAdvanced::GetTokenEmbedding(
+    int token_id) {
+  auto execution_manager_lock = execution_manager_.lock();
+  if (execution_manager_lock == nullptr) {
+    return absl::FailedPreconditionError("Execution manager is not available.");
+  }
+  return execution_manager_lock->LookupTokenEmbedding(token_id);
 }
 
 std::optional<SessionDebugInfo> SessionAdvanced::GetSessionDebugInfo() const {

@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
@@ -98,6 +99,27 @@ class FakeLlmExecutor : public LlmExecutor {
   absl::StatusOr<DraftVerificationResult> VerifyDraft(
       absl::Span<const int> draft_token_ids,
       const ExecutorDecodeParams& decode_params) override;
+
+  // Fake embedding steps with rows of `kFakeEmbeddingDimension` floats: the
+  // hidden states of a row are the row itself, the logits of a step are
+  // `vocab_size` zeros and the embedding of a token is the token ID repeated.
+  // Each row takes one step.
+  static constexpr int kFakeEmbeddingDimension = 4;
+
+  absl::Status PrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) override;
+
+  absl::Status DecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) override;
+
+  absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) override {
+    return std::vector<float>(kFakeEmbeddingDimension,
+                              static_cast<float>(token_id));
+  }
 
   absl::string_view ExecutorBackendName() const override {
     return "FakeLlmExecutorBackend";

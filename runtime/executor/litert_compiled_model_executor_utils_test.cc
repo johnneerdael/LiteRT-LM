@@ -253,6 +253,27 @@ TEST(LlmLiteRTCompiledModelExecutorUtilsTest,
 }
 
 TEST(LlmLiteRTCompiledModelExecutorUtilsTest,
+     GetModelSignaturesFromInputOutputNames_HiddenStatesOutput) {
+  std::vector<absl::string_view> input_names = {"input_pos", "mask",
+                                                "embeddings"};
+  std::vector<absl::string_view> output_names = {"hidden", "logits"};
+  ASSERT_OK_AND_ASSIGN(auto signatures, GetModelSignaturesFromInputOutputNames(
+                                            input_names, output_names));
+  EXPECT_EQ(signatures.input_embeddings, "embeddings");
+  EXPECT_EQ(signatures.output_logits, "logits");
+  EXPECT_EQ(signatures.output_hidden_states, "hidden");
+}
+
+TEST(LlmLiteRTCompiledModelExecutorUtilsTest,
+     GetModelSignaturesFromInputOutputNames_NoHiddenStatesOutput) {
+  std::vector<absl::string_view> input_names = {"tokens", "input_pos", "mask"};
+  std::vector<absl::string_view> output_names = {"logits"};
+  ASSERT_OK_AND_ASSIGN(auto signatures, GetModelSignaturesFromInputOutputNames(
+                                            input_names, output_names));
+  EXPECT_FALSE(signatures.output_hidden_states.has_value());
+}
+
+TEST(LlmLiteRTCompiledModelExecutorUtilsTest,
      GetModelSignaturesFromInputOutputNames_Unsupported) {
   std::vector<absl::string_view> input_names = {"unknown_input"};
   std::vector<absl::string_view> output_names = {"logits"};

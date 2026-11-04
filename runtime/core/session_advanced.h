@@ -33,6 +33,7 @@
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/synchronization/mutex.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "runtime/engine/engine.h"
 #include "runtime/engine/engine_settings.h"
@@ -189,6 +190,19 @@ class SessionAdvanced : public SessionInterface {
 
   // Get the current step of the session.
   absl::StatusOr<int> GetCurrentStep() const override;
+
+  absl::Status RunPrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) override
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
+  absl::Status RunDecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) override
+      ABSL_LOCKS_EXCLUDED(mutex_);
+
+  absl::StatusOr<std::vector<float>> GetTokenEmbedding(int token_id) override;
 
   // Cancels the ongoing inference process.
   //

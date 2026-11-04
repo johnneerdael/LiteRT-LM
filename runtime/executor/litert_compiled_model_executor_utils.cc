@@ -114,6 +114,9 @@ constexpr std::array<absl::string_view, 1> kInputInt32ParamNames = {
     "param_tensor"};
 // Possible output logits names:
 constexpr std::array<absl::string_view, 1> kOutputLogitsNames = {"logits"};
+// Possible output hidden states names:
+constexpr std::array<absl::string_view, 2> kOutputHiddenStatesNames = {
+    "hidden", "hidden_states"};
 
 absl::StatusOr<std::unique_ptr<ModelResources>>
 BuildModelResourcesFromTaskFormat(const ModelAssets& model_assets) {
@@ -398,6 +401,10 @@ absl::StatusOr<ModelSignatures> GetModelSignaturesFromInputOutputNames(
   for (auto output_name : output_names) {
     if (absl::c_linear_search(kOutputLogitsNames, output_name)) {
       model_signatures.output_logits = std::string(output_name);
+      continue;
+    }
+    if (absl::c_linear_search(kOutputHiddenStatesNames, output_name)) {
+      model_signatures.output_hidden_states = std::string(output_name);
       continue;
     }
   }

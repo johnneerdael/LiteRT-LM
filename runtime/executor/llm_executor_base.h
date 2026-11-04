@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "absl/base/nullability.h"  // from @com_google_absl
 #include "absl/status/status.h"  // from @com_google_absl
 #include "absl/status/status_macros.h"  // from @com_google_absl
 #include "absl/status/statusor.h"  // from @com_google_absl
@@ -96,6 +97,55 @@ class LlmExecutorBase {
         absl::StrCat("Decode for logits output not implemented for backend: ",
                      ExecutorBackendName()));
   };
+
+  // ------------Embedding step APIs------------:
+  // For models that take input embeddings, e.g. to feed back embeddings that
+  // the caller computes from the model's outputs (speech generation). Each
+  // row of `embedding_dimension` floats (the last dimension of the model's
+  // embeddings input) takes one position from the current step on. Unlike
+  // `Prefill()`, which keeps its last token pending for the next `Decode()`,
+  // these calls process all of their rows: a pending input token left by
+  // `Prefill()` is processed first, and none is left. The next text input must
+  // then be given by `Prefill()`.
+
+  // The token ID that the processed tokens record for each row of input
+  // embeddings, like the special tokens of vision and audio embeddings.
+  static constexpr int kInputEmbeddingToken = -5;
+
+  // Prefills `embeddings`, one or more rows of input embeddings. If
+  // `last_hidden_states` is not null, it receives the hidden states of the
+  // last row (the output of the model's last layer, before the logits), which
+  // requires the model to output them.
+  virtual absl::Status PrefillEmbeddings(
+      absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) {
+    return absl::UnimplementedError(
+        absl::StrCat("PrefillEmbeddings not implemented for backend: ",
+                     ExecutorBackendName()));
+  }
+
+  // Runs one step with the input embedding row `embedding`, without sampling.
+  // If `hidden_states` is not null, it receives the hidden states of the step,
+  // which requires the model to output them. If `logits` is not null, it
+  // receives the logits of the step, [vocab_size] floats. A step without
+  // logits may skip computing them.
+  virtual absl::Status DecodeEmbedding(
+      absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) {
+    return absl::UnimplementedError(
+        absl::StrCat("DecodeEmbedding not implemented for backend: ",
+                     ExecutorBackendName()));
+  }
+
+  // Returns the input embedding row of the text token `token_id`, as the
+  // executor's embedding lookup computes it.
+  virtual absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) {
+    return absl::UnimplementedError(
+        absl::StrCat("LookupTokenEmbedding not implemented for backend: ",
+                     ExecutorBackendName()));
+  }
 
   // Returns OK if the executor can verify draft tokens, i.e. run them through
   // the model in parallel and keep the longest prefix that decoding would have

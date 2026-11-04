@@ -424,6 +424,7 @@ cc_library(
         "@com_google_absl//absl/strings:string_view",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/time",
+        "@com_google_absl//absl/types:span",
         "@litert//litert/cc:litert_environment",
         "//runtime/engine:engine_interface",
         "//runtime/engine:engine_settings",

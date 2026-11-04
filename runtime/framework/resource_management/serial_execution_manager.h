@@ -30,6 +30,7 @@
 #include "absl/status/statusor.h"  // from @com_google_absl
 #include "absl/strings/string_view.h"  // from @com_google_absl
 #include "absl/time/time.h"  // from @com_google_absl
+#include "absl/types/span.h"  // from @com_google_absl
 #include "litert/cc/litert_environment.h"  // from @litert
 #include "litert/cc/litert_tensor_buffer.h"  // from @litert
 #include "runtime/components/constrained_decoding/constraint.h"
@@ -228,6 +229,18 @@ class SerialExecutionManager : public ExecutionManager {
                               int target_step) override;
 
   // Saves the processed context of the session.
+  absl::Status PrefillEmbeddings(
+      const SessionInfo& session_info, absl::Span<const float> embeddings,
+      std::vector<float>* absl_nullable last_hidden_states) override;
+
+  absl::Status DecodeEmbedding(
+      const SessionInfo& session_info, absl::Span<const float> embedding,
+      std::vector<float>* absl_nullable hidden_states,
+      std::vector<float>* absl_nullable logits) override;
+
+  absl::StatusOr<std::vector<float>> LookupTokenEmbedding(
+      int token_id) override;
+
   absl::StatusOr<std::unique_ptr<ProcessedContext>> SaveContext(
       const SessionInfo& session_info) override;
 

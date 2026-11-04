@@ -173,6 +173,63 @@ internal object LiteRtLmJni {
   external fun nativeCloneSession(sessionPointer: Long): Long
 
   /**
+   * Returns the input embedding row of a text token.
+   *
+   * @param sessionPointer A pointer to the native session instance.
+   * @param tokenId The token ID.
+   * @return The embedding row.
+   * @throws LiteRtLmJniException if the underlying native method fails.
+   */
+  external fun nativeSessionGetTokenEmbedding(sessionPointer: Long, tokenId: Int): FloatArray
+
+  /**
+   * Prefills rows of input embeddings.
+   *
+   * @param sessionPointer A pointer to the native session instance.
+   * @param embeddings The rows of input embeddings, concatenated.
+   * @param numFloats The number of floats of [embeddings] to prefill.
+   * @return The hidden states of the last row.
+   * @throws LiteRtLmJniException if the underlying native method fails.
+   */
+  external fun nativeSessionPrefillEmbeddings(
+    sessionPointer: Long,
+    embeddings: FloatArray,
+    numFloats: Int,
+  ): FloatArray
+
+  /**
+   * Runs one step with a row of input embeddings.
+   *
+   * @param sessionPointer A pointer to the native session instance.
+   * @param embedding The row of input embeddings.
+   * @param withLogits Whether to compute and return the logits of the step.
+   * @return The hidden states of the step and its logits, or null if not requested.
+   * @throws LiteRtLmJniException if the underlying native method fails.
+   */
+  external fun nativeSessionDecodeEmbedding(
+    sessionPointer: Long,
+    embedding: FloatArray,
+    withLogits: Boolean,
+  ): Array<FloatArray?>
+
+  /**
+   * Rewinds the session to a step.
+   *
+   * @param sessionPointer A pointer to the native session instance.
+   * @param step The step to rewind to; 0 starts a new sequence.
+   * @throws LiteRtLmJniException if the underlying native method fails.
+   */
+  external fun nativeSessionRewindToStep(sessionPointer: Long, step: Int)
+
+  /**
+   * Returns the current step of the session.
+   *
+   * @param sessionPointer A pointer to the native session instance.
+   * @throws LiteRtLmJniException if the underlying native method fails.
+   */
+  external fun nativeSessionGetCurrentStep(sessionPointer: Long): Int
+
+  /**
    * Runs the prefill step for the given input data.
    *
    * @param sessionPointer A pointer to the native session instance.
