@@ -56,6 +56,8 @@
 #include "runtime/executor/llm_executor_io_types.h"
 #include "runtime/executor/llm_executor_settings.h"
 #include "runtime/executor/llm_litert_compiled_model_executor.h"
+#include "runtime/executor/llm_processed_context.h"
+#include "runtime/executor/state_interface.h"
 #include "runtime/proto/llm_metadata.pb.h"
 #include "runtime/util/convert_tensor_buffer.h"
 #include "runtime/util/test_utils.h"  // IWYU pragma: keep
@@ -763,6 +765,54 @@ TEST_P(FakeLmDraftVerificationTest, ConstraintAcceptsTheDraftsThatFollowIt) {
   EXPECT_THAT(output_tokens,
               ElementsAre(ElementsAre(kForcedTokens[num_forced])));
 }
+
+// Switching contexts with TakeContext() moves the state buffers instead of
+// copying them: each context gets its own buffers back, a new context gets a
+// spare set, zeroed, and decoding continues correctly in every context.
+TEST_P(FakeLmExecutorTest, TakeContextSwapsTheStateBuffers) {
+  ASSERT_OK(Prefill({3, 1, 4, 1, 5}));
+  ASSERT_NO_FATAL_FAILURE(DecodeAndExpectFakeLmTokens(/*num_steps=*/2));
+  const StateInterface* first_state = executor_->state_for_testing();
+  ASSERT_NE(first_state, nullptr);
+  std::vector<int> first_tokens = context_;
+
+  // Switch to a new context.
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<LlmContext> first,
+                       executor_->TakeContext());
+  EXPECT_EQ(executor_->state_for_testing(), nullptr);
+  EXPECT_EQ(
+      static_cast<LlmProcessedContext&>(first->processed_context()).state()
+          .get(),
+      first_state);
+  RuntimeConfig runtime_config;
+  runtime_config.sampler_params = GreedySamplerParams();
+  ASSERT_OK_AND_ASSIGN(auto second, executor_->CreateNewContext(
+                                        std::nullopt, runtime_config));
+  ASSERT_OK(executor_->RestoreContext(std::move(second)));
+  const StateInterface* second_state = executor_->state_for_testing();
+  ASSERT_NE(second_state, nullptr);
+  EXPECT_NE(second_state, first_state);
+  context_.clear();
+  ASSERT_OK(Prefill({2, 7, 1, 8, 2, 8, 1, 8, 2, 8}));
+  ASSERT_NO_FATAL_FAILURE(DecodeAndExpectFakeLmTokens(/*num_steps=*/2));
+  std::vector<int> second_tokens = context_;
+
+  // Switch back: the first context gets its own buffers.
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<LlmContext> second_saved,
+                       executor_->TakeContext());
+  ASSERT_OK(executor_->RestoreContext(std::move(first)));
+  EXPECT_EQ(executor_->state_for_testing(), first_state);
+  context_ = first_tokens;
+  ASSERT_NO_FATAL_FAILURE(DecodeAndExpectFakeLmTokens(/*num_steps=*/3));
+
+  // And again to the second context.
+  ASSERT_OK_AND_ASSIGN(first, executor_->TakeContext());
+  ASSERT_OK(executor_->RestoreContext(std::move(second_saved)));
+  EXPECT_EQ(executor_->state_for_testing(), second_state);
+  context_ = second_tokens;
+  ASSERT_NO_FATAL_FAILURE(DecodeAndExpectFakeLmTokens(/*num_steps=*/3));
+}
+
 
 INSTANTIATE_TEST_SUITE_P(
     FakeLms, FakeLmExecutorTest,

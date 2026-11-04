@@ -378,5 +378,93 @@ TEST(ResourceManagerContextSwitchFallbackTest,
   ASSERT_OK(executor->SetCurrentStep(3));
 }
 
+// A fake executor whose state, like the LiteRT executors' state buffers, moves
+// into the context that TakeContext() returns. Its next restore can be made to
+// fail.
+class MovingStateFakeLlmExecutor : public FakeLlmExecutor {
+ public:
+  MovingStateFakeLlmExecutor()
+      : FakeLlmExecutor(/*vocab_size=*/16, /*prefill_tokens_set=*/{},
+                        /*decode_tokens_set=*/{}) {}
+
+  void FailNextRestore() { fail_next_restore_ = true; }
+
+  absl::StatusOr<std::unique_ptr<LlmContext>> CreateNewContext(
+      std::optional<uint32_t> lora_id,
+      RuntimeConfig runtime_config) const override {
+    return std::make_unique<LlmContext>(
+        std::make_unique<FakeProcessedContext>(),
+        std::make_unique<RuntimeConfig>(std::move(runtime_config)),
+        std::make_unique<RuntimeState>());
+  }
+  absl::StatusOr<std::unique_ptr<LlmContext>> CloneContext() const override {
+    RuntimeState runtime_state;
+    runtime_state.current_step = step_.value_or(0);
+    return std::make_unique<LlmContext>(
+        std::make_unique<FakeProcessedContext>(),
+        std::make_unique<RuntimeConfig>(),
+        std::make_unique<RuntimeState>(runtime_state));
+  }
+  absl::StatusOr<std::unique_ptr<LlmContext>> TakeContext() override {
+    ABSL_ASSIGN_OR_RETURN(auto context, CloneContext());
+    step_.reset();  // The state now belongs to `context`.
+    return context;
+  }
+  absl::Status RestoreContext(
+      std::unique_ptr<LlmContext> llm_context) override {
+    if (fail_next_restore_) {
+      fail_next_restore_ = false;
+      return absl::InternalError("Restore failed.");
+    }
+    step_ = llm_context->runtime_state().current_step;
+    return absl::OkStatus();
+  }
+  absl::StatusOr<int> GetCurrentStep() const override {
+    if (!step_.has_value()) {
+      return absl::FailedPreconditionError("The executor has no state.");
+    }
+    return *step_;
+  }
+  absl::Status SetCurrentStep(int current_step) override {
+    step_ = current_step;
+    return absl::OkStatus();
+  }
+
+ private:
+  std::optional<int> step_ = 0;
+  bool fail_next_restore_ = false;
+};
+
+TEST(ResourceManagerTest, AFailedRestoreKeepsTheSavedContextRestorable) {
+  auto executor = std::make_unique<MovingStateFakeLlmExecutor>();
+  MovingStateFakeLlmExecutor* fake = executor.get();
+  ASSERT_OK_AND_ASSIGN(
+      auto resource_manager,
+      ResourceManager::Create(/*model_resources=*/nullptr, std::move(executor),
+                              /*vision_executor_settings=*/nullptr,
+                              /*audio_executor_settings=*/nullptr,
+                              /*litert_env=*/nullptr));
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<ContextHandler> first,
+                       resource_manager->CreateContextHandler(
+                           SessionConfig::CreateDefault()));
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<ContextHandler> second,
+                       resource_manager->CreateContextHandler(
+                           SessionConfig::CreateDefault()));
+  {
+    ASSERT_OK_AND_ASSIGN(
+        auto locked,
+        resource_manager->AcquireExecutorWithContextHandler(first));
+    ASSERT_OK(locked->SetCurrentStep(5));
+  }
+  fake->FailNextRestore();
+  EXPECT_FALSE(
+      resource_manager->AcquireExecutorWithContextHandler(second).ok());
+  // `first` was saved before the failed restore took the executor's state:
+  // switching back restores it.
+  ASSERT_OK_AND_ASSIGN(
+      auto locked, resource_manager->AcquireExecutorWithContextHandler(first));
+  EXPECT_THAT(locked->GetCurrentStep(), IsOkAndHolds(5));
+}
+
 }  // namespace
 }  // namespace litert::lm
