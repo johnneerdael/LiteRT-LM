@@ -356,6 +356,14 @@ constructor(
   @Deprecated("Use speculativeDecodingConfig (mode ON or OFF) instead.")
   val enableSpeculativeDecoding: Boolean? = null,
   val speculativeDecodingConfig: SpeculativeDecodingConfig? = null,
+  /** The most tokens one decode may write, or null for the runtime default (no limit). */
+  val maxOutputTokens: Int? = null,
+  /**
+   * Whether the session wraps its input in the model's prompt template, or null for the runtime
+   * default (true). False sends the input exactly as given, for callers that write the template
+   * themselves.
+   */
+  val applyPromptTemplate: Boolean? = null,
 )
 
 /**

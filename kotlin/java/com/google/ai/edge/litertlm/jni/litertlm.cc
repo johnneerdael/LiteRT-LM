@@ -1079,8 +1079,24 @@ LITERTLM_JNIEXPORT jlong JNICALL JNI_METHOD(nativeCreateSession)(
     JNIEnv* env, jclass thiz, jlong engine_pointer, jobject sampler_config_obj,
     jstring lora_path_str, jstring audio_lora_path_str,
     jobject enable_speculative_decoding, jobject speculative_decoding_mode,
-    jobject speculative_lenience) {
+    jobject speculative_lenience, jobject max_output_tokens,
+    jobject apply_prompt_template) {
   auto session_config = SessionConfig::CreateDefault();
+  if (max_output_tokens != nullptr) {
+    jclass integer_class = env->FindClass("java/lang/Integer");
+    jmethodID int_value = env->GetMethodID(integer_class, "intValue", "()I");
+    session_config.SetMaxOutputTokens(
+        env->CallIntMethod(max_output_tokens, int_value));
+    env->DeleteLocalRef(integer_class);
+  }
+  if (apply_prompt_template != nullptr) {
+    jclass boolean_class = env->FindClass("java/lang/Boolean");
+    jmethodID boolean_value =
+        env->GetMethodID(boolean_class, "booleanValue", "()Z");
+    session_config.SetApplyPromptTemplateInSession(
+        env->CallBooleanMethod(apply_prompt_template, boolean_value));
+    env->DeleteLocalRef(boolean_class);
+  }
   if (!ApplyOptionalSpeculativeDecodingMode(env, speculative_decoding_mode,
                                             enable_speculative_decoding,
                                             session_config)) {

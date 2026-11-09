@@ -214,6 +214,8 @@ class Engine(val engineConfig: EngineConfig) : AutoCloseable {
           sessionConfig.enableSpeculativeDecoding,
           sessionConfig.speculativeDecodingConfig?.mode?.value,
           sessionConfig.speculativeDecodingConfig?.lenience,
+          sessionConfig.maxOutputTokens,
+          sessionConfig.applyPromptTemplate,
         )
       )
     }
@@ -241,6 +243,8 @@ class Engine(val engineConfig: EngineConfig) : AutoCloseable {
           /* enableSpeculativeDecoding= */ null,
           /* speculativeDecodingMode= */ null,
           /* speculativeLenience= */ null,
+          /* maxOutputTokens= */ null,
+          /* applyPromptTemplate= */ null,
         )
       )
     }

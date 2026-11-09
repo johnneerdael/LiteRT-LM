@@ -166,6 +166,8 @@ internal object LiteRtLmJni {
    *   decoding config, or null to inherit the engine's.
    * @param speculativeLenience The lenience of the session's speculative decoding config, or null
    *   to inherit the engine's.
+   * @param maxOutputTokens The most tokens one decode may write, or null for no limit.
+   * @param applyPromptTemplate Whether input is wrapped in the prompt template, or null for true.
    * @return A pointer to the native session instance.
    */
   external fun nativeCreateSession(
@@ -176,6 +178,8 @@ internal object LiteRtLmJni {
     enableSpeculativeDecoding: Boolean?,
     speculativeDecodingMode: Int?,
     speculativeLenience: Float?,
+    maxOutputTokens: Int?,
+    applyPromptTemplate: Boolean?,
   ): Long
 
   /**
